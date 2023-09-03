@@ -1,0 +1,380 @@
+---
+title: "Web Scraping"
+author: "Wanzhu Zheng"
+date: "2023"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+We are tasked with scraping data from a Stack Overflow forum with the 'r' tag.
+In order to do so, we read the URL using read_html from the xml2 package.
+```{r}
+library(xml2)
+library(knitr)
+
+url = "https://stackoverflow.com/questions/tagged/r?tab=newest&pagesize=50"
+doc = read_html(url)
+class(doc)
+
+bodies = xml_find_all(doc, ".//div[@class='s-post-summary    js-post-summary']")
+```
+
+We first write multiple helper functions to scrape the information on pages
+with multiple questions. We return a list of elements which we can manually
+check with the information on the website. These values are all what we expect
+because they return the same information as the website.
+
+
+To find the xpath, we inspect the website and find the nodes that correspond
+to what we are searching for. In scrape_views, we want the node that gives us
+a summary of of the post. We then use gsub to match the part of post-summary
+we want. Then, only returning the numeric value gives us the number of views.
+```{r}
+scrape_views = function(nodes){
+  view_count = sapply(nodes, function(node){
+    matches = xml_find_all(node, ".//div[@class='s-post-summary--stats-item ']")
+    
+    xml_text(matches[1])
+  })
+  
+  as.numeric(gsub("*([0-9]*) views", "\\1", view_count))
+}
+
+views = scrape_views(bodies)
+head(views)
+```
+
+```{r}
+scrape_votes = function(nodes){
+  sapply(nodes, function(node){
+    matches = xml_find_all(node, ".//span[@class='s-post-summary--stats-item-number']")
+    
+    xml_text(matches[1])
+  })
+}
+
+votes = scrape_votes(bodies)
+head(votes)
+```
+
+```{r}
+scrape_titles = function(nodes){
+  sapply(nodes, function(node){
+    matches = xml_find_all(node, ".//div[@class='s-post-summary--content']/h3/a/text()")
+    if (length(matches) == 0){
+      return(NA)
+    }
+    xml_text(matches[1])
+  })
+}
+
+title = scrape_titles(bodies)
+head(title)
+```
+
+```{r}
+scrape_excerpt = function(nodes){
+  sapply(nodes, function(node){
+    matches = xml_find_all(node, ".//div[@class='s-post-summary--content-excerpt']/text()")
+
+    xml_text(matches[1])
+  })
+}
+
+excerpt = scrape_excerpt(bodies)
+head(excerpt)
+```
+
+```{r}
+scrape_tags = function(nodes){
+  tags = sapply(nodes, function(node){
+    matches = xml_find_all(node, ".//div[contains(@class, 's-post-summary--meta-tags d-inline-block tags js-tags') and contains(@class, 't-r')]/@class")
+
+    xml_text(matches[1])
+  })
+  
+  tags1 = gsub("s-post-summary--meta-tags d-inline-block tags js-tags t-" , "", tags)
+  gsub(" t-" , ", ", tags1)
+}
+
+tags = scrape_tags(bodies)
+head(tags)
+```
+
+When scraping the date of the post, we make sure to use as.POSIXct to return
+a datetime value.
+```{r}
+scrape_post_date = function(nodes){
+  post_date = sapply(nodes, function(node){
+    matches = xml_find_all(node, ".//time[@class='s-user-card--time']//span/@title")
+
+    xml_text(matches[1])
+  })
+  
+  as.POSIXct(post_date)
+}
+
+post_date = scrape_post_date(bodies)
+head(post_date)
+```
+
+```{r}
+scrape_users = function(nodes){
+  users = sapply(nodes, function(node){
+    matches = xml_find_all(node, ".//div[@class='s-user-card--link d-flex gs4']")
+
+    xml_text(matches[1])
+  })
+  
+  gsub("\r\n.*", "", gsub("\r\n *", "", users))
+}
+
+user = scrape_users(bodies)
+head(user)
+```
+
+```{r}
+scrape_reputations = function(nodes){
+  sapply(nodes, function(node){
+    matches = xml_find_all(node, ".//span[@class='todo-no-class-here']")
+    
+    xml_text(matches[1])
+  })
+}
+
+reputation = scrape_reputations(bodies)
+head(reputation)
+```
+
+```{r}
+get_post_url = function(nodes){
+  post_url = sapply(nodes, function(node){
+    matches = xml_find_all(node, ".//div[@class='s-post-summary--content']/h3/a/@href")
+
+    xml_text(matches[1])
+  })
+  
+  paste("https://stackoverflow.com", post_url, sep = "")
+}
+
+post_url = get_post_url(bodies)
+head(post_url)
+```
+
+Now, we create a dataframe called meta and return all the values we found in
+the dataframe. We check the dimensions of the dataframe to see if it's correct.
+We see that there are 50 rows, which corresponds to all the post on the newest
+page of the website. The 9 represents the 9 columns we have scraped.
+```{r}
+create_df = function(url){
+  ll = read_html(url)
+  tt = xml_find_all(doc, ".//div[@class='s-post-summary    js-post-summary']")
+  
+  views = scrape_views(tt)
+  votes = scrape_votes(tt)
+  title = scrape_titles(tt)
+  excerpt = scrape_excerpt(tt)
+  tags = scrape_tags(tt)
+  post_date = scrape_post_date(tt)
+  user = scrape_users(tt)
+  reputation = scrape_reputations(tt)
+  post_url = get_post_url(tt)
+  
+  meta = data.frame(views, votes, title, excerpt, tags, post_date, user, 
+                  reputation, post_url)
+  meta$excerpt = trimws(meta$excerpt, which = c("both"))
+  meta
+}
+
+meta = create_df(url)
+head(meta)
+dim(meta)
+```
+
+Now, we find the next url and return it in a list. To find the next url, we
+first find the xpath that corresponds to the url through the source code.
+Next, we paste "https://stackoverlow.com" to next_url, since it only
+returns the latter half of the web url.
+```{r}
+get_next_url = function(doc){
+  next_url = xml_text(xml_find_first(doc, "//div[@class='s-pagination site1 themed pager float-left']
+                                   /a[@rel = 'next']/@href"))
+  paste("https://stackoverflow.com", next_url, sep = "")
+}
+
+next_url = get_next_url(doc)
+next_url
+```
+
+To return the badges of the user, we find the xpath under the question node
+that points to the user profile on the question and answer page. Then,
+we return the badges in a list and add it to our dataframe meta.
+```{r}
+scrape_badges = function(url){
+  badge = lapply(post_url, function(url){
+    doc = read_html(url)
+    question = xml_find_all(doc, "//div[@class='question js-question']")
+  
+    badges = xml_text(xml_find_all(question, ".//div[@class='user-info ']//div[@class='user-details']//div[@class='-flair']/span[@class='v-visible-sr']/text()"))
+    badges1 = paste(badges, collapse=", ")
+  })
+  
+}
+
+badges = unlist(scrape_badges(post_url))
+meta$badges = badges
+head(meta)
+```
+
+
+To get the information for the second page, we get the next url with our
+get_next_url function that returns the url of the second page. We repeat
+this process to gather information on the third page and the last page.
+```{r}
+head(create_df(next_url))
+```
+
+```{r}
+new_doc = read_html(next_url)
+new_next_url = get_next_url(new_doc)
+head(create_df(new_next_url))
+```
+
+Now, we scrape the question information on the Q&A page specific to each post.
+Again, we write our xpath based on the node under the main "question" 
+parent node.
+
+I had received an error telling me that the length of editor and edit_date
+don't match. This means that one variable was length 0 and the other variable
+was length 1. To debug this, I wrote 2 if-statements. That way, the length of
+editor and edit_date will always be 1.
+```{r}
+scrape_questions = function(url){
+  doc = read_html(url)
+  question = xml_find_all(doc, "//div[@class='question js-question']")
+  
+  editor = xml_text(xml_find_all(question, ".//div[@class='post-signature flex--item']//div[@class='user-info user-hover']//div[@class='user-details']/a"))
+
+  edit_date = as.POSIXct(xml_text(xml_find_all(question, ".//*[text()[contains(.,'edited')]]//span/@title")))
+  
+  if(length(editor) == 0){
+    editor = NA
+  }
+  if(length(edit_date) == 0){
+    edit_date = NA
+  }
+
+  data.frame(editor, edit_date)
+}
+scrape_questions(post_url[35])
+```
+
+Now, we use the same process to scrape the answers to each question. We 
+put them in a dataframe similar to the questions.
+```{r}
+scrape_answers = function(url){
+  doc = read_html(url)
+  answers = xml_find_all(doc, "//div[@id='answers']")
+  
+  question = xml_text(xml_find_all(doc, ".//div[@id='question-header']/h1/a/text()"))
+    
+  text = as.character(xml_text(xml_find_all(answers, ".//div[@class = 's-prose js-post-body']/p")))
+  answer_text = paste(text, collapse=" ")
+
+  user = xml_text(xml_find_all(answers, ".//div[@class='user-details']/a/text()"))
+    
+  answered_date = as.POSIXct(xml_text(xml_find_all(answers, ".//*[text()[contains(.,'answered')]]//span/@title")))
+    
+  reputation = xml_text(xml_find_all(answers, ".//div[@class='user-details']//div[@class='-flair']//span[@class='reputation-score']/text()"))
+  
+  if(answer_text == ""){
+    answer_text = NA
+    user = NA
+    reputation = NA
+    answered_date = NA
+  } 
+  
+  return(data.frame(answer_text, user, reputation, answered_date))
+  
+}
+scrape_answers(post_url[35])
+```
+For comments, we want to specify that the comments are under answers. Thus,
+we choose a node that is specific to answers so all our comments fall under
+the parent node of "answer".
+
+```{r}
+scrape_comments = function(url){
+  doc = read_html(url)
+  comments = xml_find_all(doc, ".//ul[@class='comments-list js-comments-list']")
+
+  text = xml_text(xml_find_all(comments, ".//span[@class='comment-copy']/text()"))
+  comment_text = paste(text, collapse=" ")
+  
+  user = xml_text(xml_find_all(comments, ".//div[@class='d-inline-flex ai-center']/a/text()"))
+    
+  comment_date = as.POSIXct(xml_text(xml_find_all(comments, ".//span[@class='comment-date']/span/@title")))
+   
+  if(comment_text == ""){
+    comment_text = NA
+    user = NA
+    comment_date = NA
+  } 
+  return(data.frame(comment_text, user, comment_date))
+  
+}
+scrape_comments(post_url[32])
+```
+
+To scrape all the questions, we run our master url list into a for-loop that
+iterates over every url and calls our scrape_questions function repeatedly
+and returns our values in a dataframe. To do this for the second, third, 
+and last page, we use our get_next_url function to return the second page
+of posts and repeat the same process.\\
+
+This returns a dataframe with 2 columns: editor and edit_date.
+```{r}
+scrape_newest_q = function(urls){
+  questions_df = NULL
+  for(i in 1:length(urls)){
+    questions_df = rbind(questions_df, scrape_questions(urls[i]))
+  }
+  return(questions_df)
+}
+
+head(scrape_newest_q(post_url))
+```
+
+This gives a dataframe with 4 columns: answer_text, the user who posted the
+answer, their reputation, and the answer_date
+```{r}
+scrape_newest_a = function(urls){
+  answers_df = NULL
+  for(i in 1:length(urls)){
+    answers_df = rbind(answers_df, scrape_answers(urls[i]))
+  }
+  return(answers_df)
+}
+
+head(scrape_newest_a(post_url))
+```
+
+This gives a dataframe with 3 columns: text of comment, user, and the date
+of the comment.
+```{r}
+scrape_newest_c = function(urls){
+  comments_df = NULL
+  for(i in 1:length(urls)){
+    comments_df = rbind(comments_df, scrape_comments(urls[i]))
+  }
+  return(comments_df)
+}
+
+head(scrape_newest_c(post_url))
+```
